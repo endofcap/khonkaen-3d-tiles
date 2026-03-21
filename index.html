@@ -1,1 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cesium COPC LiDAR Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html, body {
+      width: 100%; height: 100%;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+    }
+
+    #cesiumContainer {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+    }
+
+    /* ── Control Panel ────────────────────────────────────────────── */
+    #panel {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      width: 320px;
+      background: rgba(15, 15, 30, 0.88);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      padding: 16px;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #panel h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      color: #7ecfff;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .field label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #aaa;
+    }
+
+    .field input[type="text"],
+    .field select {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 5px;
+      color: #eee;
+      padding: 6px 8px;
+      font-size: 13px;
+      width: 100%;
+    }
+
+    .field input[type="range"] {
+      width: 100%;
+      accent-color: #7ecfff;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      background: #1e6db5;
+      border: none;
+      border-radius: 5px;
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      padding: 7px 14px;
+      white-space: nowrap;
+    }
+
+    button:hover { background: #2a87d8; }
+
+    #status {
+      font-size: 12px;
+      color: #b0e0ff;
+      min-height: 18px;
+    }
+
+    #progress {
+      display: none;
+    }
+
+    #progress-bar {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      accent-color: #7ecfff;
+    }
+
+    #stats {
+      font-size: 11px;
+      color: #888;
+      min-height: 16px;
+    }
+
+    /* ── Legend ───────────────────────────────────────────────────── */
+    #legend {
+      position: absolute;
+      bottom: 40px;
+      right: 10px;
+      background: rgba(15, 15, 30, 0.85);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 10px 14px;
+      z-index: 100;
+      font-size: 12px;
+    }
+
+    #legend h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: #aaa;
+      margin-bottom: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .elevation-bar {
+      width: 120px;
+      height: 14px;
+      border-radius: 3px;
+      background: linear-gradient(to right, #0000ff, #00c8c8, #00ff00, #ffff00, #ff0000);
+    }
+  </style>
+</head>
+<body>
+
+  <div id="cesiumContainer"></div>
+
+  <!-- ── Control Panel ──────────────────────────────────────────────── -->
+  <div id="panel">
+    <h1>⬡ COPC LiDAR Viewer</h1>
+
+    <div class="field">
+      <label>COPC URL (.copc.laz)</label>
+      <div class="row">
+        <input type="text" id="url-input" placeholder="https://…/data.copc.laz" />
+        <button id="load-btn">Load</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Color Scheme</label>
+      <select id="color-scheme">
+        <option value="elevation">Elevation</option>
+        <option value="intensity">Intensity</option>
+        <option value="classification">Classification</option>
+        <option value="rgb">RGB (if available)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Point Size: <span id="point-size-val">2</span>px</label>
+      <input type="range" id="point-size" min="1" max="8" step="0.5" value="2" />
+    </div>
+
+    <div class="row">
+      <button id="reload-btn">↺ Reload viewport</button>
+    </div>
+
+    <div id="status">Loading…</div>
+    <div id="progress"><progress id="progress-bar" max="100" value="0"></progress></div>
+    <div id="stats"></div>
+  </div>
+
+  <!-- ── Classification Legend (shown when classification scheme active) -->
+  <div id="legend">
+    <h2>Classification</h2>
+    <div class="legend-item"><div class="legend-swatch" style="background:#8b8b8b"></div>Unclassified</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#8b5a2b"></div>Ground</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#90ee90"></div>Low Vegetation</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#228b22"></div>Medium Vegetation</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#006400"></div>High Vegetation</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#ff4500"></div>Building</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#1e90ff"></div>Water</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#a9a9a9"></div>Road</div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
