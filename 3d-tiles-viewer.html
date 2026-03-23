@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MapLibre 3D Tiles Viewer</title>
+
+  <!-- MapLibre CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f1e;
+      color: #eee;
+      overflow: hidden;
+    }
+
+    #map { position: absolute; inset: 0; }
+
+    /* ── Panel ─────────────────────────────────────── */
+    #panel {
+      position: absolute;
+      top: 10px; left: 10px;
+      width: 340px;
+      background: rgba(10, 10, 28, 0.92);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.13);
+      border-radius: 12px;
+      padding: 16px;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #panel h1 {
+      font-size: 14px; font-weight: 600;
+      letter-spacing: 0.5px; color: #7ecfff;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 5px; }
+
+    .field label {
+      font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.7px; color: #999;
+    }
+
+    .row { display: flex; gap: 8px; }
+
+    input[type="text"] {
+      flex: 1;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      color: #eee; padding: 7px 10px;
+      font-size: 12px; font-family: monospace;
+    }
+    input[type="text"]:focus { outline: none; border-color: #7ecfff; }
+
+    button {
+      background: #1a6bb5; border: none; border-radius: 6px;
+      color: #fff; cursor: pointer;
+      font-size: 12px; padding: 7px 14px;
+      white-space: nowrap; transition: background 0.15s;
+    }
+    button:hover  { background: #2a87d8; }
+    button:active { background: #1450a0; }
+    button:disabled { background: #444; cursor: default; }
+
+    #status { font-size: 12px; color: #b0e0ff; min-height: 16px; }
+    #status.error { color: #ff7c7c; }
+    #status.ok    { color: #7cffb0; }
+    #status.loading { color: #ffd080; }
+
+    hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); }
+
+    .presets { display: flex; flex-wrap: wrap; gap: 5px; }
+    .preset-btn {
+      font-size: 11px; padding: 4px 8px;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 4px; cursor: pointer; color: #ccc;
+      transition: background 0.15s;
+    }
+    .preset-btn:hover { background: rgba(255,255,255,0.14); color: #fff; }
+
+    .hint { font-size: 11px; color: #666; line-height: 1.6; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="panel">
+  <h1>&#9707; MapLibre 3D Tiles Viewer</h1>
+
+  <div class="field">
+    <label>3D Tiles URL (tileset.json)</label>
+    <div class="row">
+      <input type="text" id="url-input"
+             placeholder="https://…/tileset.json" />
+      <button id="load-btn">Load</button>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Preset datasets (CesiumGS samples)</label>
+    <div class="presets">
+      <button class="preset-btn"
+        data-url="https://raw.githubusercontent.com/CesiumGS/3d-tiles-samples/main/1.0/TilesetWithDiscreteLOD/tileset.json">
+        Discrete LOD
+      </button>
+      <button class="preset-btn"
+        data-url="https://raw.githubusercontent.com/CesiumGS/3d-tiles-samples/main/1.0/TilesetWithRequestVolume/tileset.json">
+        Request Volume
+      </button>
+      <button class="preset-btn"
+        data-url="https://raw.githubusercontent.com/CesiumGS/3d-tiles-samples/main/1.0/TilesetWithBatchTable/tileset.json">
+        Batch Table
+      </button>
+    </div>
+  </div>
+
+  <hr />
+
+  <div id="status">맵 로드 중…</div>
+
+  <p class="hint">
+    ECEF 좌표계(Cesium 생성) 또는 지역 ENU 좌표계의 tileset.json을<br/>
+    입력하면 MapLibre 위에 Three.js로 렌더링합니다.<br/>
+    타일셋 로드 시 카메라가 해당 위치로 자동 이동합니다.
+  </p>
+</div>
+
+<!-- ────────────────────────────────────────────────────────
+     Import map: Three.js + 3d-tiles-renderer
+     (버전은 MapLibre 공식 docs 예제 기준)
+───────────────────────────────────────────────────────── -->
+<script type="importmap">
+{
+  "imports": {
+    "three":               "https://unpkg.com/three@0.183.0/build/three.module.js",
+    "three/examples/jsm/": "https://unpkg.com/three@0.183.0/examples/jsm/",
+    "3d-tiles-renderer":   "https://unpkg.com/3d-tiles-renderer@0.4.21/src/index.js"
+  }
+}
+</script>
+
+<script type="module">
+// ─── imports ────────────────────────────────────────────────────────────────
+import maplibregl from 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js';
+import * as THREE from 'three';
+import { GLTFLoader }  from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { KTX2Loader }  from 'three/examples/jsm/loaders/KTX2Loader.js';
+import { TilesRenderer } from '3d-tiles-renderer';
+
+// ─── 상수 ───────────────────────────────────────────────────────────────────
+const R_EARTH = 6378137;          // WGS-84 반장축 (m)
+const TWO_PI  = 2 * Math.PI;
+
+// ─── 상태 변수 ──────────────────────────────────────────────────────────────
+let tilesRenderer = null;
+let threeRenderer = null;
+let camera = null;
+let scene  = null;
+let layerActive = false;
+
+// ─── UI 유틸 ────────────────────────────────────────────────────────────────
+const statusEl   = document.getElementById('status');
+const urlInput   = document.getElementById('url-input');
+const loadBtn    = document.getElementById('load-btn');
+
+function setStatus(msg, cls = '') {
+  statusEl.textContent = msg;
+  statusEl.className   = cls;
+}
+
+// ─── MapLibre 맵 초기화 ─────────────────────────────────────────────────────
+const map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://demotiles.maplibre.org/style.json',
+  center: [0, 20],
+  zoom: 2,
+  pitch: 45,
+  antialias: true,
+});
+
+map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.ScaleControl());
+map.on('load', () => setStatus('맵 준비 완료. URL을 입력하고 Load를 누르세요.', 'ok'));
+
+// ─── 좌표 변환 유틸 ─────────────────────────────────────────────────────────
+
+/**
+ * ECEF 좌표 → 위경도(radians)
+ */
+function ecefToLatLon(ecef) {
+  const r   = ecef.length();
+  const lat = Math.asin(THREE.MathUtils.clamp(ecef.z / r, -1, 1));
+  const lon = Math.atan2(ecef.y, ecef.x);
+  return { lat, lon, r };
+}
+
+/**
+ * 위경도(radians) → Web Mercator [0,1] XY + 해발고도 Z(Mercator 단위)
+ */
+function latLonToMercator(lat, lon, altMeters = 0) {
+  const x = lon / TWO_PI + 0.5;
+  const y = 0.5 - Math.log(Math.tan(Math.PI / 4 + lat / 2)) / TWO_PI;
+  const z = altMeters / (TWO_PI * R_EARTH);
+  return { x, y, z };
+}
+
+/**
+ * ECEF → Mercator 아핀 변환 행렬 (4×4)
+ *
+ * 수식 유도:
+ *   ENU_P = R_ecef2enu × (P_ecef − P_center_ecef)
+ *   Mercator = [scale_xy, −scale_xy, scale_z] × ENU_P  + M_center
+ *
+ * 여기서:
+ *   scale_xy = 1 / (2π · R_earth · cos(lat))   (ENU East/North → Mercator X/Y)
+ *   scale_z  = 1 / (2π · R_earth)               (ENU Up       → Mercator Z )
+ *   Mercator Y는 북쪽 방향과 반대이므로 North 성분에 부호 반전
+ *
+ * 행렬 T의 열(column) = ECEF 각 기저 벡터가 Mercator 공간에서 향하는 방향
+ *
+ * 이동량 t:
+ *   R_ecef2enu × P_center = (0, 0, |P_center|)  → Up 성분만 남음
+ *   t = (mx, my, −|P_center| · scale_z)
+ */
+function makeEcefToMercatorMatrix(lat, lon, R) {
+  const sL  = Math.sin(lat), cL  = Math.cos(lat);
+  const sLo = Math.sin(lon), cLo = Math.cos(lon);
+
+  const sxy = 1 / (TWO_PI * R_EARTH * cL);   // East/North 방향 스케일
+  const sz  = 1 / (TWO_PI * R_EARTH);         // Up 방향 스케일
+
+  const { x: mx, y: my } = latLonToMercator(lat, lon, 0);
+
+  //         col0(ECEF+X)          col1(ECEF+Y)           col2(ECEF+Z)   col3(translation)
+  return new THREE.Matrix4().set(
+    -sxy * sLo,           sxy * cLo,            0,          mx,
+     sxy * sL * cLo,      sxy * sL * sLo,      -sxy * cL,   my,
+     sz  * cL * cLo,      sz  * cL * sLo,       sz  * sL,  -R * sz,
+     0,                   0,                    0,           1
+  );
+}
+
+// ─── TilesRenderer 생성 / 설정 ───────────────────────────────────────────────
+
+function createTilesRenderer(url, gl) {
+  const tr = new TilesRenderer(url);
+
+  // DRACO 압축 지원
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath(
+    'https://unpkg.com/three@0.183.0/examples/jsm/libs/draco/gltf/'
+  );
+
+  // KTX2 텍스처 압축 지원
+  const ktx2Loader = new KTX2Loader();
+  ktx2Loader.setTranscoderPath(
+    'https://unpkg.com/three@0.183.0/examples/jsm/libs/basis/'
+  );
+  if (threeRenderer) ktx2Loader.detectSupport(threeRenderer);
+
+  // GLTF 로더 등록
+  const gltfLoader = new GLTFLoader(tr.manager);
+  gltfLoader.setDRACOLoader(dracoLoader);
+  gltfLoader.setKTX2Loader(ktx2Loader);
+
+  // *.gltf, *.glb, *.b3dm 모두 GLTFLoader로 처리
+  tr.manager.addHandler(/\.(gltf|glb|b3dm)$/i, gltfLoader);
+
+  return tr;
+}
+
+// ─── Custom MapLibre Layer ───────────────────────────────────────────────────
+
+function buildCustomLayer(url) {
+  return {
+    id: '3d-tiles-layer',
+    type: 'custom',
+    renderingMode: '3d',
+
+    onAdd(map, gl) {
+      // Three.js 렌더러: MapLibre WebGL 컨텍스트 공유
+      threeRenderer = new THREE.WebGLRenderer({
+        canvas:   map.getCanvas(),
+        context:  gl,
+        antialias: true,
+      });
+      threeRenderer.autoClear = false;
+      threeRenderer.outputColorSpace = THREE.SRGBColorSpace;
+
+      camera = new THREE.Camera();
+      scene  = new THREE.Scene();
+
+      // 조명
+      scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+      sun.position.set(1, 2, 3);
+      scene.add(sun);
+
+      // TilesRenderer 생성
+      tilesRenderer = createTilesRenderer(url, gl);
+      tilesRenderer.setCamera(camera);
+      tilesRenderer.setResolutionFromRenderer(camera, threeRenderer);
+
+      // 타일셋 로드 완료 → 좌표 변환 행렬 설정 + 카메라 이동
+      tilesRenderer.addEventListener('load-tile-set', () => {
+        positionAndFly();
+      });
+
+      // 개별 타일 로드 → 다음 프레임 요청
+      tilesRenderer.addEventListener('load-model', () => {
+        map.triggerRepaint();
+      });
+
+      scene.add(tilesRenderer.group);
+    },
+
+    render(gl, args) {
+      if (!tilesRenderer || !camera || !scene) return;
+
+      // ── 카메라 행렬 동기화 ──────────────────────────────────────────────
+      // args.defaultProjectionData.mainMatrix :
+      //   Mercator 좌표 → 클립 공간 전체 변환 행렬 (Float64Array 16)
+      // camera.projectionMatrix 에 할당하고, viewMatrix = identity 로 설정.
+      // 결과:  clip = projMatrix × viewMatrix × groupMatrix × ecefVertex
+      //             = (MaplibreVP) × I × (ECEF→Mercator) × ecefVertex   ✓
+      const mainMatrix = args.defaultProjectionData.mainMatrix;
+      camera.projectionMatrix.fromArray(mainMatrix);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      camera.matrixWorld.identity();
+      camera.matrixWorldInverse.identity();
+
+      // ── 타일 업데이트 및 렌더 ───────────────────────────────────────────
+      tilesRenderer.setResolutionFromRenderer(camera, threeRenderer);
+      tilesRenderer.update();
+
+      threeRenderer.resetState();
+      threeRenderer.render(scene, camera);
+
+      // 타일이 남아 있으면 계속 갱신 요청
+      map.triggerRepaint();
+    },
+
+    onRemove() {
+      if (tilesRenderer) {
+        tilesRenderer.dispose();
+        tilesRenderer = null;
+      }
+    },
+  };
+}
+
+// ─── 타일셋 위치 설정 + 카메라 이동 ─────────────────────────────────────────
+
+function positionAndFly() {
+  if (!tilesRenderer) return;
+
+  // 바운딩 구: group.matrix = identity 상태에서 호출 → ECEF 좌표계
+  const sphere = new THREE.Sphere();
+  tilesRenderer.getBoundingSphere(sphere);
+
+  if (!sphere.center || sphere.radius === 0) {
+    setStatus('바운딩 볼륨을 읽을 수 없습니다.', 'error');
+    return;
+  }
+
+  const center = sphere.center;
+  const R = center.length();
+
+  let lngDeg, latDeg, matrix;
+
+  if (R > 1e6) {
+    // ── ECEF 좌표계 (Cesium 등) ─────────────────────────────────────
+    // 구 중심 위치 (위경도)
+    const { lat, lon } = ecefToLatLon(center);
+    matrix  = makeEcefToMercatorMatrix(lat, lon, R);
+    lngDeg  = lon * 180 / Math.PI;
+    latDeg  = lat * 180 / Math.PI;
+  } else if (R > 1) {
+    // ── 로컬 ENU 좌표계 (meters, 원점 = 지역 기준점) ────────────────
+    // 이 경우 url-center 입력에서 위경도를 받아야 정확히 배치 가능.
+    // 여기서는 입력 필드 값 또는 기본값(서울)을 사용.
+    const centerInput = document.getElementById('center-input');
+    const parts = centerInput ? centerInput.value.split(',').map(Number) : [];
+    const refLng = (parts.length === 2 && isFinite(parts[0])) ? parts[0] : 126.978;
+    const refLat = (parts.length === 2 && isFinite(parts[1])) ? parts[1] : 37.566;
+    const lat = refLat * Math.PI / 180;
+    const lon = refLng * Math.PI / 180;
+    matrix = makeEnuToMercatorMatrix(lat, lon);
+    lngDeg = refLng;
+    latDeg = refLat;
+  } else {
+    setStatus('좌표 범위를 인식할 수 없습니다.', 'error');
+    return;
+  }
+
+  // 그룹 변환 행렬 적용 (이후 matrixAutoUpdate 중단)
+  tilesRenderer.group.matrix.copy(matrix);
+  tilesRenderer.group.matrixAutoUpdate = false;
+
+  // 줌 추정: 타일 반경(m) 기반
+  const radiusMeters = sphere.radius;
+  const zoom = Math.max(6, Math.min(18,
+    22 - Math.log2(Math.max(radiusMeters, 1))
+  ));
+
+  map.flyTo({
+    center: [lngDeg, latDeg],
+    zoom,
+    pitch: 50,
+    bearing: 0,
+    duration: 2500,
+  });
+
+  setStatus(
+    `타일셋 로드 완료 — ${lngDeg.toFixed(4)}°, ${latDeg.toFixed(4)}°`,
+    'ok'
+  );
+  loadBtn.disabled = false;
+}
+
+/**
+ * 로컬 ENU(m) → Mercator 행렬 (lat,lon은 radians)
+ * ENU 원점이 주어진 위경도 지점에 있다고 가정.
+ *
+ *   East  → +Mercator X
+ *   North → -Mercator Y  (Mercator Y는 남쪽 방향)
+ *   Up    → +Mercator Z
+ */
+function makeEnuToMercatorMatrix(lat, lon) {
+  const scale = 1 / (TWO_PI * R_EARTH);   // 1m → Mercator 단위
+  const { x: mx, y: my } = latLonToMercator(lat, lon, 0);
+
+  return new THREE.Matrix4().set(
+    scale, 0,      0,      mx,
+    0,    -scale,  0,      my,
+    0,     0,      scale,  0,
+    0,     0,      0,      1
+  );
+}
+
+// ─── 타일셋 로드 진입점 ──────────────────────────────────────────────────────
+
+function loadTileset(url) {
+  url = url.trim();
+  if (!url) { setStatus('URL을 입력하세요.', 'error'); return; }
+
+  setStatus('타일셋 로딩 중…', 'loading');
+  loadBtn.disabled = true;
+
+  // 기존 레이어 제거
+  if (layerActive) {
+    try { map.removeLayer('3d-tiles-layer'); } catch (_) {}
+    layerActive = false;
+    tilesRenderer = null;
+  }
+
+  const layer = buildCustomLayer(url);
+
+  try {
+    map.addLayer(layer);
+    layerActive = true;
+  } catch (err) {
+    setStatus(`레이어 추가 실패: ${err.message}`, 'error');
+    loadBtn.disabled = false;
+  }
+}
+
+// ─── UI 이벤트 ───────────────────────────────────────────────────────────────
+
+loadBtn.addEventListener('click', () => loadTileset(urlInput.value));
+
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadTileset(e.target.value);
+});
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    urlInput.value = btn.dataset.url;
+    loadTileset(btn.dataset.url);
+  });
+});
+</script>
+</body>
+</html>
